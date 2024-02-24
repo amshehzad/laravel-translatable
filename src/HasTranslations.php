@@ -4,7 +4,6 @@ namespace Spatie\Translatable;
 
 use Exception;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Support\Str;
 use Spatie\Translatable\Events\TranslationHasBeenSetEvent;
 use Spatie\Translatable\Exceptions\AttributeIsNotTranslatable;
@@ -33,7 +32,7 @@ trait HasTranslations
             return parent::getAttributeValue($key);
         }
 
-        return $this->getTranslation($key, $this->getLocale(), $this->useFallbackLocale());
+        return $this->getTranslation($key, $this->getLocale(), $this->useFallbackLocale()) ?: parent::getAttributeValue($key);
     }
 
     protected function mutateAttributeForArray($key, $value): mixed
@@ -118,7 +117,7 @@ trait HasTranslations
             $this->guardAgainstNonTranslatableAttribute($key);
 
             return array_filter(
-                json_decode($this->getAttributes()[$key] ?? '' ?: '{}', true) ?: [],
+                json_decode($this->getAttributes()['translations'] ?? '' ?: '{}', true)[$key] ?? [] ?: [],
                 fn ($value, $locale) => $this->filterTranslations($value, $locale, $allowedLocales),
                 ARRAY_FILTER_USE_BOTH,
             );
@@ -135,6 +134,7 @@ trait HasTranslations
     {
         $this->guardAgainstNonTranslatableAttribute($key);
 
+        $allTranslations = $this->getTranslations();
         $translations = $this->getTranslations($key);
 
         $oldValue = $translations[$locale] ?? '';
@@ -151,9 +151,13 @@ trait HasTranslations
             $value = $this->attributes[$key];
         }
 
-        $translations[$locale] = $value;
+        $allTranslations[$key][$locale] = $value;
 
-        $this->attributes[$key] = json_encode($translations, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($locale == config('app.locale')){
+            $this->attributes[$key] = $value;
+        }
+
+        $this->attributes['translations'] = $this->asJson($allTranslations);
 
         event(new TranslationHasBeenSetEvent($this, $key, $locale, $oldValue, $value));
 
@@ -178,11 +182,14 @@ trait HasTranslations
     public function forgetTranslation(string $key, string $locale): self
     {
         $translations = $this->getTranslations($key);
+        $allTranslations = $this->getTranslations();
 
         unset(
             $translations[$locale],
-            $this->$key
+            $allTranslations[$key]
         );
+
+        $this->attributes['translations'] = $this->asJson($allTranslations);
 
         $this->setTranslations($key, $translations);
 
@@ -319,22 +326,12 @@ trait HasTranslations
             : [];
     }
 
-    public function translations(): Attribute
-    {
-        return Attribute::get(function () {
-            return collect($this->getTranslatableAttributes())
-                ->mapWithKeys(function (string $key) {
-                    return [$key => $this->getTranslations($key)];
-                })
-                ->toArray();
-        });
-    }
 
     public function getCasts(): array
     {
         return array_merge(
             parent::getCasts(),
-            array_fill_keys($this->getTranslatableAttributes(), 'array'),
+            ['translations' => 'array']
         );
     }
 
@@ -380,7 +377,7 @@ trait HasTranslations
      */
     public static function whereLocale(string $column, string $locale): Builder
     {
-        return static::query()->whereNotNull("{$column}->{$locale}");
+        return static::query()->whereNotNull("translations->{$column}->{$locale}");
     }
 
     /**
@@ -390,7 +387,7 @@ trait HasTranslations
     {
         return static::query()->where(function (Builder $query) use ($column, $locales) {
             foreach ($locales as $locale) {
-                $query->orWhereNotNull("{$column}->{$locale}");
+                $query->orWhereNotNull("translations->{$column}->{$locale}");
             }
         });
     }
